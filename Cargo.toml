@@ -1,0 +1,10 @@
+[package]
+name = "deinterleave-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytemuck = "1.16.3"
+multiversion = "0.7.4"
+num-complex = { version = "0.4.6", features = ["bytemuck"] }
+num-traits = "0.2.19"
