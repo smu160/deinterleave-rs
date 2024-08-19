@@ -3,7 +3,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use deinterleave_rs::{
     deinterleave_autovec, deinterleave_naive, deinterleave_simd_swizzle_x86_64_v3,
-    deinterleave_simd_swizzle_x86_64_v4,
+    deinterleave_simd_swizzle_x86_64_v4, deinterleave_simd_unpck_x86_64_v4,
 };
 
 fn benchmark_deinterleave(c: &mut Criterion) {
@@ -37,6 +37,12 @@ fn benchmark_deinterleave(c: &mut Criterion) {
             BenchmarkId::new("Simd Swizzle deinterleave x84-64-v4", size),
             &input,
             |b, input| b.iter(|| deinterleave_simd_swizzle_x86_64_v4(black_box(input))),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("Simd unpack-high unpack-low deinterleave x84-64-v4", size),
+            &input,
+            |b, input| b.iter(|| deinterleave_simd_unpck_x86_64_v4(black_box(input))),
         );
     }
 
