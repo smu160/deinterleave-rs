@@ -1,70 +1,57 @@
 #![forbid(unsafe_code)]
 #![feature(portable_simd, avx512_target_feature)]
 
-use bytemuck::cast_slice;
-use num_complex::Complex;
-use std::simd::{f32x16, f64x8, simd_swizzle, Simd, SimdElement};
+use std::simd::{simd_swizzle, Simd, SimdElement};
 
-macro_rules! impl_separate_re_im {
-    ($func_name:ident, $precision:ty, $lanes:literal, $simd_vec:ty) => {
-        /// Utility function to separate interleaved format signals (i.e., Vector of Complex Number Structs)
-        /// into separate vectors for the corresponding real and imaginary components.
-        #[multiversion::multiversion(
-                                    targets("x86_64+avx512f+avx512bw+avx512cd+avx512dq+avx512vl", // x86_64-v4
-                                            "x86_64+avx2+fma", // x86_64-v3
-                                            "x86_64+sse4.2", // x86_64-v2
-                                            "x86+avx512f+avx512bw+avx512cd+avx512dq+avx512vl",
-                                            "x86+avx2+fma",
-                                            "x86+sse4.2",
-                                            "x86+sse2",
-                                        ))]
-        #[inline]
-        pub fn $func_name(
-            signal: &[Complex<$precision>],
-        ) -> (Vec<$precision>, Vec<$precision>) {
-            let n = signal.len();
-            let mut reals = vec![0.0; n];
-            let mut imags = vec![0.0; n];
+#[multiversion::multiversion(
+    targets("x86_64+avx512f+avx512bw+avx512cd+avx512dq+avx512vl", // x86_64-v4
+    "x86_64+avx2+fma", // x86_64-v3
+    "x86_64+sse4.2", // x86_64-v2
+    "x86+avx512f+avx512bw+avx512cd+avx512dq+avx512vl",
+    "x86+avx2+fma",
+    "x86+sse4.2",
+    "x86+sse2",
+    ))]
+#[inline]
+pub fn deinterleave_simd_unpck_x86_64_v4<T: Copy + Default + SimdElement>(
+    input: &[T],
+) -> (Vec<T>, Vec<T>) {
+    const CHUNK_SIZE: usize = 4;
+    const DOUBLE_CHUNK: usize = CHUNK_SIZE * 2;
+    let out_len = input.len() / 2;
+    let mut reals = vec![T::default(); out_len];
+    let mut imags = vec![T::default(); out_len];
 
-            let complex_t: &[$precision] = cast_slice(signal);
-            const CHUNK_SIZE: usize = $lanes * 2;
+    for ((chunk, chunk_re), chunk_im) in input
+        .chunks_exact(DOUBLE_CHUNK)
+        .zip(reals.chunks_exact_mut(CHUNK_SIZE))
+        .zip(imags.chunks_exact_mut(CHUNK_SIZE))
+    {
+        let (first_half, second_half) = chunk.split_at(CHUNK_SIZE);
 
-            for ((chunk, chunk_re), chunk_im) in complex_t
-                .chunks_exact(CHUNK_SIZE)
-                .zip(reals.chunks_exact_mut($lanes))
-                .zip(imags.chunks_exact_mut($lanes))
-            {
-                let (first_half, second_half) = chunk.split_at($lanes);
+        let a = Simd::<T, CHUNK_SIZE>::from_slice(first_half);
+        let b = Simd::<T, CHUNK_SIZE>::from_slice(second_half);
+        let (re_deinterleaved, im_deinterleaved) = a.deinterleave(b);
 
-                let a = <$simd_vec>::from_slice(&first_half);
-                let b = <$simd_vec>::from_slice(&second_half);
-                let (re_deinterleaved, im_deinterleaved) = a.deinterleave(b);
+        chunk_re.copy_from_slice(&re_deinterleaved.to_array());
+        chunk_im.copy_from_slice(&im_deinterleaved.to_array());
+    }
 
-                chunk_re.copy_from_slice(&re_deinterleaved.to_array());
-                chunk_im.copy_from_slice(&im_deinterleaved.to_array());
-            }
+    let remainder = input.chunks_exact(DOUBLE_CHUNK).remainder();
+    let reals_rem = reals.chunks_exact_mut(CHUNK_SIZE).into_remainder();
+    let imags_rem = imags.chunks_exact_mut(CHUNK_SIZE).into_remainder();
 
-            let remainder = complex_t.chunks_exact(CHUNK_SIZE).remainder();
-            let reals_rem = reals.chunks_exact_mut($lanes).into_remainder();
-            let imags_rem = imags.chunks_exact_mut($lanes).into_remainder();
+    remainder
+        .chunks_exact(2)
+        .zip(reals_rem.iter_mut())
+        .zip(imags_rem.iter_mut())
+        .for_each(|((c, re), im)| {
+            *re = c[0];
+            *im = c[1];
+        });
 
-            remainder
-                .chunks_exact(2)
-                .zip(reals_rem.iter_mut())
-                .zip(imags_rem.iter_mut())
-                .for_each(|((c, re), im)| {
-                    *re = c[0];
-                    *im = c[1];
-                });
-
-
-            (reals, imags)
-        }
-    };
+    (reals, imags)
 }
-
-impl_separate_re_im!(simd_deinterleave_32, f32, 16, f32x16);
-impl_separate_re_im!(simd_deinterleave_64, f64, 8, f64x8);
 
 #[multiversion::multiversion(
     targets("x86_64+avx512f+avx512bw+avx512cd+avx512dq+avx512vl", // x86_64-v4
@@ -229,7 +216,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        assert_eq!(0, 0);
+    fn unpack_high_low_deinterleave() {
+        for i in 0..20 {
+            let n = 1 << i;
+            let mut interleaved_vec = vec![0.0; n * 2];
+
+            interleaved_vec.chunks_exact_mut(2).for_each(|c| {
+                c[0] = 1.0;
+                c[1] = 0.0
+            });
+            println!("{interleaved_vec:?}");
+
+            let (e, o) = deinterleave_simd_unpck_x86_64_v4(&interleaved_vec);
+
+            println!("{e:?}\n{o:?}");
+
+            assert_eq!(e, vec![1.0; n]);
+            assert_eq!(o, vec![0.0; n]);
+        }
     }
 }
